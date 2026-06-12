@@ -1,0 +1,27 @@
+# .NET build output
+**/bin/
+**/obj/
+artifacts/
+publish/
+
+# Visual Studio generated files (the IDE is not required)
+.vs/
+*.user
+*.suo
+*.pdb
+*.cache
+
+# Tests and coverage
+TestResults/
+coverage/
+
+# VS Code machine-specific files
+.vscode/*.user
+.vscode/.ropeproject
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+records/
