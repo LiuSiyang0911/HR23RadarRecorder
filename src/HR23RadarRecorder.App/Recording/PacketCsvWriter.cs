@@ -4,7 +4,9 @@ namespace HR23RadarRecorder.App.Recording;
 
 public sealed class PacketCsvWriter : IAsyncDisposable
 {
+    private const int FlushIntervalRows = 100;
     private readonly StreamWriter writer;
+    private int rowsSinceFlush;
 
     public PacketCsvWriter(string path)
     {
@@ -15,6 +17,12 @@ public sealed class PacketCsvWriter : IAsyncDisposable
     public void Write(long index, Core.TimeStamp timestamp, long elapsedNs, IPEndPoint sender, int length, long fileOffset)
     {
         writer.WriteLine($"{index},{timestamp.UtcText},{timestamp.MonoNs},{elapsedNs},{sender.Address},{sender.Port},{length},{fileOffset}");
+        rowsSinceFlush++;
+        if (rowsSinceFlush >= FlushIntervalRows)
+        {
+            writer.Flush();
+            rowsSinceFlush = 0;
+        }
     }
 
     public async ValueTask DisposeAsync()

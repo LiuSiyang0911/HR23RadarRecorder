@@ -97,6 +97,8 @@ The UDP socket is opened only after `start`. The TCP service is opened only afte
 4. Send/perform `start`; UDP payloads are now appended to `raw.dat`.
 5. Send/perform `stop`; wait for the `stopped` response before consuming files.
 
+Start finalizes the `recording_started` timestamp, opens `raw.dat` and `packets.csv`, publishes the `recording` state, and only then starts the UDP receive loop. This ordering prevents the first packet from being discarded during startup. Stop publishes `stopping`, stops and joins the UDP receive loop, then flushes and closes every output file before returning.
+
 Each capture directory contains:
 
 ```text
@@ -107,6 +109,8 @@ metadata.json
 ```
 
 With no radar traffic, start/stop still succeeds: `raw.dat` is empty, `packets.csv` contains its header, and events/metadata are finalized normally.
+
+`packets.csv` is flushed every 100 packet rows to limit index loss after an abnormal exit without forcing a disk flush for every packet. A normal stop always performs a final flush for all remaining rows.
 
 ## Manual TCP Test
 
@@ -134,6 +138,22 @@ foreach ($command in $commands) {
 $client.Dispose()
 ```
 
+To inject ten mock UDP packets after the `start` command, run this in another PowerShell terminal. Use the configured local IP and port; the default example below targets loopback for local testing:
+
+```powershell
+$udp = [Net.Sockets.UdpClient]::new()
+$target = [Net.IPEndPoint]::new([Net.IPAddress]::Loopback, 20202)
+
+1..10 | ForEach-Object {
+  $payload = [Text.Encoding]::UTF8.GetBytes("mock-hr23-packet-$($_)")
+  [void]$udp.Send($payload, $payload.Length, $target)
+}
+
+$udp.Dispose()
+```
+
+For a fully local test, temporarily set `udp.localIp` to `127.0.0.1`, run `prepare` and `start`, send the mock packets, then run `stop`. Verify that `raw.dat` is non-empty, `packets.csv` has 11 lines (one header plus ten packets), and `metadata.json` reports `packetCount: 10`.
+
 Output is below the `outputDir` supplied to `prepare`. See [docs/protocol.md](docs/protocol.md) and [docs/file_format.md](docs/file_format.md).
 
 ## Tests
@@ -144,7 +164,7 @@ The test runner uses only the .NET standard library:
 dotnet run --project tests/HR23RadarRecorder.Tests
 ```
 
-It verifies invalid state responses, an empty recording, verbatim UDP capture, and the TCP JSON Lines control sequence.
+It verifies invalid state responses, an empty recording, immediate first-packet capture, periodic packet CSV flushing, stop consistency under active UDP traffic, and the TCP JSON Lines control sequence.
 
 ## Dependencies
 

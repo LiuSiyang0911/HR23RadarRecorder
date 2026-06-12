@@ -29,6 +29,8 @@ Index,Utc,MonoNs,SessionElapsedNs,SenderIp,SenderPort,Length,FileOffset
 | `Length` | Payload length in bytes |
 | `FileOffset` | Payload starting offset in `raw.dat` |
 
+The packet CSV writer flushes every 100 data rows. This bounds the amount of packet-index data that can remain only in process buffers during recording while avoiding a costly flush for every UDP packet. Stop always flushes the remaining rows and closes the file.
+
 ## events.csv
 
 ```csv
@@ -50,7 +52,7 @@ The final metadata contains:
 - generated file names
 - packet/byte totals and first, last, and raw-close UTC timestamps
 
-`metadata.json` is finalized during stop. A successful stop response means all four files have been flushed and closed and can be opened by another process.
+`metadata.json` is finalized during stop. A successful `ok:true,state:"stopped"` response means all four files have been flushed and closed and can be opened by another process. The summary counts only packets actually appended to `raw.dat`; `lastPacketUtc` is the timestamp of the last such packet.
 
 ## Offline Processing
 

@@ -13,7 +13,7 @@ public sealed class CaptureRecorder : IAsyncDisposable
     private readonly TimeStampProvider clock;
     private readonly SemaphoreSlim commandGate = new(1, 1);
     private readonly object snapshotLock = new();
-    private RecorderState state = RecorderState.Idle;
+    private volatile RecorderState state = RecorderState.Idle;
     private CaptureSession? session;
     private EventCsvWriter? eventWriter;
     private CaptureFileWriter? fileWriter;
@@ -115,9 +115,9 @@ public sealed class CaptureRecorder : IAsyncDisposable
             fileWriter = new CaptureFileWriter(session.CaptureDir);
             session.RecordingStartedAt = clock.GetTimestamp();
             eventWriter.Write(session.RecordingStartedAt.Value, 0, "recording_started");
+            state = RecorderState.Recording;
             udpClient = new RadarUdpClient(network);
             await udpClient.StartAsync(HandlePacketAsync).ConfigureAwait(false);
-            state = RecorderState.Recording;
             Notify("recording_started");
             return Success("start", clock.GetTimestamp());
         }

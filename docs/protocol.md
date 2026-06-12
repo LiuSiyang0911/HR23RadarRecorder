@@ -55,7 +55,7 @@ The response includes state, session ID, capture directory, packet count, byte c
 {"cmd":"start"}
 ```
 
-Start creates `raw.dat` and `packets.csv`, establishes the session elapsed-time origin, starts the UDP receive loop, and changes state to `recording`.
+Start records `start_command_received`, creates `raw.dat` and `packets.csv`, establishes the session elapsed-time origin, records `recording_started`, and changes state to `recording` before starting the UDP receive loop. The receiver therefore cannot accept a packet while the recorder still reports `prepared`, which prevents a startup first-packet race.
 
 ### stop
 
@@ -63,7 +63,9 @@ Start creates `raw.dat` and `packets.csv`, establishes the session elapsed-time 
 {"cmd":"stop"}
 ```
 
-Stop changes state to `stopping`, stops UDP reception, flushes and closes the raw and packet files, writes `metadata.json`, writes the final events, closes `events.csv`, and only then responds with `ok:true,state:"stopped"`.
+Stop first changes state to `stopping`, so newly delivered packets are rejected. It cancels UDP reception and waits for the receive loop and any in-progress packet handler to finish before closing writers. It then flushes and closes the raw and packet files, writes `metadata.json`, writes the final events, closes `events.csv`, and only then responds with `ok:true,state:"stopped"`.
+
+A successful `ok:true,state:"stopped"` response is the file-readiness boundary: `raw.dat`, `packets.csv`, `events.csv`, and `metadata.json` have all been flushed and closed.
 
 ## Error Response
 

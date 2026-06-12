@@ -9,7 +9,9 @@ using HR23RadarRecorder.App.Radar;
 return await TestRunner.RunAsync(
     ("invalid start is rejected", InvalidStartIsRejectedAsync),
     ("empty capture closes all files", EmptyCaptureClosesAllFilesAsync),
-    ("udp packet is recorded verbatim", UdpPacketIsRecordedVerbatimAsync),
+    ("first udp packet is recorded immediately", FirstUdpPacketIsRecordedImmediatelyAsync),
+    ("packet csv flushes every one hundred rows", PacketCsvFlushesEveryOneHundredRowsAsync),
+    ("stop during udp traffic keeps files consistent", StopDuringUdpTrafficKeepsFilesConsistentAsync),
     ("tcp json lines controls capture", TcpJsonLinesControlsCaptureAsync));
 
 static async Task InvalidStartIsRejectedAsync()
@@ -39,6 +41,11 @@ static async Task EmptyCaptureClosesAllFilesAsync()
     Assert.FileExists(Path.Combine(outputDir, "packets.csv"));
     Assert.FileExists(Path.Combine(outputDir, "events.csv"));
     Assert.FileExists(Path.Combine(outputDir, "metadata.json"));
+    Assert.FilesCanBeOpenedExclusively(
+        Path.Combine(outputDir, "raw.dat"),
+        Path.Combine(outputDir, "packets.csv"),
+        Path.Combine(outputDir, "events.csv"),
+        Path.Combine(outputDir, "metadata.json"));
     Assert.Equal("Index,Utc,MonoNs,SessionElapsedNs,SenderIp,SenderPort,Length,FileOffset", File.ReadLines(Path.Combine(outputDir, "packets.csv")).First());
 
     string events = File.ReadAllText(Path.Combine(outputDir, "events.csv"));
@@ -58,7 +65,7 @@ static async Task EmptyCaptureClosesAllFilesAsync()
     }
 }
 
-static async Task UdpPacketIsRecordedVerbatimAsync()
+static async Task FirstUdpPacketIsRecordedImmediatelyAsync()
 {
     int port = GetFreeUdpPort();
     string outputDir = CreateTempDirectory();
@@ -76,8 +83,93 @@ static async Task UdpPacketIsRecordedVerbatimAsync()
     string[] rows = File.ReadAllLines(Path.Combine(outputDir, "packets.csv"));
     Assert.Equal(2, rows.Length);
     Assert.Contains(",12,0", rows[1]);
+    Assert.Contains("first_packet_received", File.ReadAllText(Path.Combine(outputDir, "events.csv")));
     Assert.Equal(1L, recorder.GetSnapshot().PacketCount);
     Assert.Equal(12L, recorder.GetSnapshot().TotalBytes);
+}
+
+static async Task PacketCsvFlushesEveryOneHundredRowsAsync()
+{
+    int port = GetFreeUdpPort();
+    string outputDir = CreateTempDirectory();
+    await using CaptureRecorder recorder = CreateRecorder(port);
+    await recorder.PrepareAsync(new PrepareCommand("flush", outputDir));
+    await recorder.StartAsync();
+
+    byte[] payload = [0x48, 0x52, 0x32, 0x33];
+    using UdpClient sender = new();
+    for (int index = 0; index < 101; index++)
+    {
+        await sender.SendAsync(payload, new IPEndPoint(IPAddress.Loopback, port));
+    }
+
+    await WaitUntilAsync(() => recorder.GetSnapshot().PacketCount == 101, TimeSpan.FromSeconds(5));
+
+    string packetsPath = Path.Combine(outputDir, "packets.csv");
+    Assert.Equal(101, ReadAllLinesWhileRecording(packetsPath).Length);
+
+    ControlResponse stop = await recorder.StopAsync();
+    Assert.True(stop.Ok);
+    Assert.Equal(102, File.ReadAllLines(packetsPath).Length);
+    Assert.Equal(404L, new FileInfo(Path.Combine(outputDir, "raw.dat")).Length);
+
+    using JsonDocument metadata = JsonDocument.Parse(File.ReadAllText(Path.Combine(outputDir, "metadata.json")));
+    JsonElement summary = metadata.RootElement.GetProperty("summary");
+    Assert.Equal(101L, summary.GetProperty("packetCount").GetInt64());
+    Assert.Equal(404L, summary.GetProperty("totalBytes").GetInt64());
+}
+
+static async Task StopDuringUdpTrafficKeepsFilesConsistentAsync()
+{
+    int port = GetFreeUdpPort();
+    string outputDir = CreateTempDirectory();
+    await using CaptureRecorder recorder = CreateRecorder(port);
+    await recorder.PrepareAsync(new PrepareCommand("stop-race", outputDir));
+    await recorder.StartAsync();
+
+    byte[] payload = Enumerable.Range(0, 32).Select(value => (byte)value).ToArray();
+    using CancellationTokenSource sendingCancellation = new();
+    Task senderTask = SendUntilCancelledAsync(port, payload, sendingCancellation.Token);
+    await WaitUntilAsync(() => recorder.GetSnapshot().PacketCount >= 10, TimeSpan.FromSeconds(5));
+
+    ControlResponse stop = await recorder.StopAsync();
+    sendingCancellation.Cancel();
+    await senderTask;
+
+    Assert.True(stop.Ok);
+    Assert.Equal("stopped", stop.State);
+    string rawPath = Path.Combine(outputDir, "raw.dat");
+    string packetsPath = Path.Combine(outputDir, "packets.csv");
+    string eventsPath = Path.Combine(outputDir, "events.csv");
+    string metadataPath = Path.Combine(outputDir, "metadata.json");
+    string[] packetRows = File.ReadAllLines(packetsPath);
+    long recordedPackets = packetRows.Length - 1;
+    long csvBytes = packetRows.Skip(1).Sum(row => long.Parse(row.Split(',')[6]));
+
+    Assert.Equal(recordedPackets * payload.Length, new FileInfo(rawPath).Length);
+    Assert.Equal(csvBytes, new FileInfo(rawPath).Length);
+    Assert.FilesCanBeOpenedExclusively(rawPath, packetsPath, eventsPath, metadataPath);
+
+    using JsonDocument metadata = JsonDocument.Parse(File.ReadAllText(metadataPath));
+    JsonElement summary = metadata.RootElement.GetProperty("summary");
+    Assert.Equal(recordedPackets, summary.GetProperty("packetCount").GetInt64());
+    Assert.Equal(csvBytes, summary.GetProperty("totalBytes").GetInt64());
+}
+
+static async Task SendUntilCancelledAsync(int port, byte[] payload, CancellationToken cancellationToken)
+{
+    using UdpClient sender = new();
+    try
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await sender.SendAsync(payload, new IPEndPoint(IPAddress.Loopback, port), cancellationToken);
+            await Task.Delay(1, cancellationToken);
+        }
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+    }
 }
 
 static async Task TcpJsonLinesControlsCaptureAsync()
@@ -106,6 +198,19 @@ static async Task TcpJsonLinesControlsCaptureAsync()
     Assert.Contains("\"state\":\"stopped\"", (await reader.ReadLineAsync())!);
 
     await server.StopAsync();
+}
+
+static string[] ReadAllLinesWhileRecording(string path)
+{
+    using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    using StreamReader reader = new(stream, Encoding.UTF8);
+    List<string> lines = new();
+    while (reader.ReadLine() is string line)
+    {
+        lines.Add(line);
+    }
+
+    return lines.ToArray();
 }
 
 static CaptureRecorder CreateRecorder(int port) => new(
@@ -181,4 +286,11 @@ static class Assert
     public static void Contains(string expected, string actual) { if (!actual.Contains(expected, StringComparison.Ordinal)) throw new InvalidOperationException($"Expected text to contain: {expected}"); }
     public static void FileExists(string path) { if (!File.Exists(path)) throw new FileNotFoundException("Expected file was not created.", path); }
     public static void SequenceEqual(byte[] expected, byte[] actual) { if (!expected.SequenceEqual(actual)) throw new InvalidOperationException("Byte sequences differ."); }
+    public static void FilesCanBeOpenedExclusively(params string[] paths)
+    {
+        foreach (string path in paths)
+        {
+            using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        }
+    }
 }
