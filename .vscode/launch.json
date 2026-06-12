@@ -7,7 +7,7 @@
       "request": "launch",
       "preLaunchTask": "build",
       "program": "${workspaceFolder}/src/HR23RadarRecorder.App/bin/Debug/net8.0-windows/HR23RadarRecorder.App.dll",
-      "cwd": "${workspaceFolder}/src/HR23RadarRecorder.App",
+      "cwd": "${workspaceFolder}",
       "stopAtEntry": false
     }
   ]

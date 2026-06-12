@@ -28,6 +28,13 @@
       "problemMatcher": "$msCompile"
     },
     {
+      "label": "test",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["run", "--project", "tests/HR23RadarRecorder.Tests"],
+      "problemMatcher": "$msCompile"
+    },
+    {
       "label": "publish",
       "type": "process",
       "command": "dotnet",

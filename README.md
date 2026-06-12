@@ -1,6 +1,8 @@
 # HR2.3 Radar Recorder
 
-Independent .NET 8 Windows Forms project skeleton for the HR2.3 radar recorder. This stage contains environment setup, configuration loading, and a minimal startup window only. It does not implement UDP acquisition, TCP control, radar processing, or file recording.
+Independent .NET 8 Windows Forms recorder for HR2.3 radar UDP data. Version 1.0 implements minimal synchronized raw recording: UDP payload capture, packet/event timestamps, metadata, a TCP JSON Lines control service, and manual GUI controls.
+
+The application intentionally does not parse radar frames, run FFT/RDM/PPI algorithms, or depend on MATLAB, `HR.dll`, or `MWArray.dll`.
 
 ## Requirements
 
@@ -21,6 +23,7 @@ Visual Studio IDE is not required. MATLAB Runtime, `HR.dll`, `MWArray.dll`, and 
 6. Run `dotnet restore`.
 7. Run `dotnet build`.
 8. Run `dotnet run --project src/HR23RadarRecorder.App`.
+9. In the GUI, click **Start control server** if an external controller will connect.
 
 Verify the SDK before building:
 
@@ -54,6 +57,7 @@ Framework-dependent output is written below `src/HR23RadarRecorder.App/bin/Relea
 ## VS Code
 
 - Use **Terminal > Run Task** to select `restore`, `build`, `run`, or `publish`.
+- Use the `test` task to run the dependency-free integration tests.
 - Use `Ctrl+Shift+B` for the default build task.
 - Press `F5` to restore, build, and debug the application.
 
@@ -83,11 +87,68 @@ The application reads `src/HR23RadarRecorder.App/appsettings.json`. The file is 
 
 `recording.defaultOutputRoot` is relative by default for portability. It may be changed to an absolute deployment path such as `D:/HR23RadarRecords` on a specific machine. If the configuration file is missing, empty, unreadable, or invalid JSON, the program uses built-in defaults and displays a notice.
 
-The endpoint values are configuration placeholders only. The current skeleton does not open sockets or write recordings.
+The UDP socket is opened only after `start`. The TCP service is opened only after clicking **Start control server**. Change `udp.localIp` to an address assigned to the recorder computer before connecting real radar hardware.
+
+## Recording Workflow
+
+1. Start the GUI.
+2. Start the TCP control service, or use the manual GUI controls.
+3. Send/perform `prepare` with a session ID and output directory.
+4. Send/perform `start`; UDP payloads are now appended to `raw.dat`.
+5. Send/perform `stop`; wait for the `stopped` response before consuming files.
+
+Each capture directory contains:
+
+```text
+raw.dat
+packets.csv
+events.csv
+metadata.json
+```
+
+With no radar traffic, start/stop still succeeds: `raw.dat` is empty, `packets.csv` contains its header, and events/metadata are finalized normally.
+
+## Manual TCP Test
+
+Start the control server in the GUI, then run this PowerShell snippet from another terminal:
+
+```powershell
+$client = [Net.Sockets.TcpClient]::new('127.0.0.1', 7070)
+$stream = $client.GetStream()
+$writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false), 1024, $true)
+$reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $false, 1024, $true)
+$writer.AutoFlush = $true
+
+$commands = @(
+  '{"cmd":"status"}',
+  '{"cmd":"prepare","sessionId":"test_001","outputDir":"records/test_001/raw/hr23_radar"}',
+  '{"cmd":"start"}',
+  '{"cmd":"stop"}'
+)
+
+foreach ($command in $commands) {
+  $writer.WriteLine($command)
+  $reader.ReadLine()
+}
+
+$client.Dispose()
+```
+
+Output is below the `outputDir` supplied to `prepare`. See [docs/protocol.md](docs/protocol.md) and [docs/file_format.md](docs/file_format.md).
+
+## Tests
+
+The test runner uses only the .NET standard library:
+
+```powershell
+dotnet run --project tests/HR23RadarRecorder.Tests
+```
+
+It verifies invalid state responses, an empty recording, verbatim UDP capture, and the TCP JSON Lines control sequence.
 
 ## Dependencies
 
-There are no third-party NuGet packages. The project uses only the .NET SDK, Windows Forms, `System.IO`, and `System.Text.Json`.
+There are no third-party NuGet packages. The project uses only the .NET SDK, Windows Forms, sockets, `System.IO`, `System.Text.Json`, tasks, and `Stopwatch`.
 
 Forbidden legacy dependencies are not referenced:
 
